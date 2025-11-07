@@ -111,11 +111,22 @@ async function fetchProofWithRetry(pairIndex) {
   }
 }
 
+/* ======== AUTO-RECONNECT (ajout minimal) ======== */
+let reconnectDelay = 5000; // 5s au début, max 60s
+async function scheduleReconnect() {
+  const d = reconnectDelay;
+  log(`⏳ Reconnecting WSS in ${Math.round(d/1000)}s...`);
+  await sleep(d);
+  reconnectDelay = Math.min(Math.round(reconnectDelay * 1.5), 60000);
+  startWSS();
+}
+/* =============================================== */
 
 function startWSS() {
   const ws = new WebSocket(WS_URL, { headers: { 'x-api-key': API_KEY } });
   ws.on('open', () => {
     log('WSS connected, subscribing...');
+    reconnectDelay = 5000; // reset du backoff sur succès
     ws.send(JSON.stringify(subscriptionMessage));
   });
 
@@ -134,8 +145,15 @@ function startWSS() {
     }
   });
 
-  ws.on('close', () => log('WSS closed'));
-  ws.on('error', (err) => log('WSS error:', err?.message || String(err)));
+  // ⬇️ modifs minimales : reconnexion
+  ws.on('close', () => {
+    log('⚠️ WSS closed');
+    scheduleReconnect();
+  });
+  ws.on('error', (err) => {
+    log('❌ WSS error:', err?.message || String(err));
+    try { ws.close(); } catch {}
+  });
 }
 
 startWSS();
