@@ -2,18 +2,34 @@
   "name": "supra-oracle-tools",
   "version": "1.0.0",
   "description": "Modular WSS -> range -> executor pipeline (Supra proofs)",
+  "private": true,
   "type": "module",
   "main": "wss_listener.js",
   "scripts": {
     "start": "node wss_listener.js",
-    "proof:test": "node -e 'import(\"./proof.js\").then(m=>m.fetchProof([0]).then(p=>console.log(\"OK proof len:\",(p.length-2)/2)).catch(e=>{console.error(e?.message||e);process.exit(1)}))'"
+    "proof:test": "node -e 'import(\"./proof.js\").then(m=>m.fetchProof([0]).then(p=>console.log(\"OK proof len:\",(p.length-2)/2)).catch(e=>{console.error(e?.message||e);process.exit(1)}))'",
+    "exec:limit": "node executor.js limit \"[1]\" $PRIVATE_KEY --asset=0 --proof=0x",
+    "exec:sl": "node executor.js sl \"[1]\" $PRIVATE_KEY --asset=0 --proof=0x",
+    "exec:tp": "node executor.js tp \"[1]\" $PRIVATE_KEY --asset=0 --proof=0x",
+    "exec:liq": "node executor.js liq \"[1]\" $PRIVATE_KEY --asset=0 --proof=0x"
   },
   "dependencies": {
     "axios": "^1.7.2",
-    "ws": "^8.18.0",
-    "dotenv": "^16.4.5"
+    "dotenv": "^16.4.5",
+    "ethers": "^6.13.0",
+    "ws": "^8.18.0"
   },
   "engines": {
     "node": ">=18"
-  }
+  },
+  "license": "MIT",
+  "keywords": [
+    "supra",
+    "oracle",
+    "evm",
+    "websocket",
+    "proof",
+    "trading"
+  ],
+  "author": "Brokex"
 }
