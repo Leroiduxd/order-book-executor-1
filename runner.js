@@ -3,8 +3,18 @@ import { spawn } from 'node:child_process';
 import { filterSuppressed, incSuppression, clearSuppression, getSuppressionMap } from './suppress.js';
 import { callVerify } from './fetcher.js';
 import { EXECUTOR_PATH, EXECUTOR_ADDR, EXECUTOR_RPC, CALL_DELAY_MS } from './config.js';
+import { VERIFY_BASE } from './config.js'; // ✅ ajouté
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
+
+/* ✅ ajout : petite fonction fire-and-forget */
+function pingVerify(ids) {
+  try {
+    if (!ids?.length) return;
+    const url = `${VERIFY_BASE}/verify/${ids.join(',')}`;
+    fetch(url).catch(() => {}); // on n’attend pas la réponse, on ignore les erreurs
+  } catch {}
+}
 
 /**
  * Call executor.js (node) with args and proof, parse stdout for simulate.* lines.
@@ -70,6 +80,11 @@ export async function runExecutor(mode, { assetId, ids, pk, slot, proofHex }) {
     const group = filtered.slice(i, i + 200);
 
     const { execFailed, skippedSim } = await callExecutorProcess(mode, group, pk, assetId, proofHex);
+
+    /* ✅ ajout : ping l’API après chaque exécution réussie */
+    if (!execFailed) {
+      pingVerify(group);
+    }
 
     if (execFailed) {
       const ver = await callVerify(group);
