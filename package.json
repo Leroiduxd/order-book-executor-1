@@ -1,0 +1,19 @@
+{
+  "name": "supra-oracle-tools",
+  "version": "1.0.0",
+  "description": "Modular WSS -> range -> executor pipeline (Supra proofs)",
+  "type": "module",
+  "main": "wss_listener.js",
+  "scripts": {
+    "start": "node wss_listener.js",
+    "proof:test": "node -e 'import(\"./proof.js\").then(m=>m.fetchProof([0]).then(p=>console.log(\"OK proof len:\",(p.length-2)/2)).catch(e=>{console.error(e?.message||e);process.exit(1)}))'"
+  },
+  "dependencies": {
+    "axios": "^1.7.2",
+    "ws": "^8.18.0",
+    "dotenv": "^16.4.5"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
