@@ -99,7 +99,7 @@ async function fetchProofWithRetry(pairIndex) {
       const msg = e?.message || String(e);
 
       // Calcul du délai avec backoff + jitter
-      const randomFactor = 1 + (Math.random() * 2 * jitter - jitter); // entre 0.7 et 1.3
+      const randomFactor = 1 + (Math.random() * 2 * jitter - jitter); // 0.7..1.3
       const sleepMs = Math.min(maxDelay, Math.round(delay * randomFactor));
 
       console.warn(`[proof] asset=${pairIndex} → ${msg} | retry in ${sleepMs}ms`);
@@ -111,23 +111,68 @@ async function fetchProofWithRetry(pairIndex) {
   }
 }
 
-/* ======== AUTO-RECONNECT (ajout minimal) ======== */
+/* ======== AUTO-RECONNECT + KEEPALIVE (ajout) ======== */
 let reconnectDelay = 5000; // 5s au début, max 60s
-async function scheduleReconnect() {
+let reconnectTimer = null;
+let pingTimer = null;
+let pongTimeout = null;
+let wsRef = null;
+const PING_INTERVAL = 20000;   // envoie un ping toutes les 20s
+const PONG_GRACE    = 15000;   // si pas de pong sous 15s -> reconnect
+
+function clearTimers() {
+  if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+  if (pongTimeout) { clearTimeout(pongTimeout); pongTimeout = null; }
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+}
+
+function scheduleReconnect() {
+  if (reconnectTimer) return; // évite multi-connexions
   const d = reconnectDelay;
   log(`⏳ Reconnecting WSS in ${Math.round(d/1000)}s...`);
-  await sleep(d);
-  reconnectDelay = Math.min(Math.round(reconnectDelay * 1.5), 60000);
-  startWSS();
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    reconnectDelay = Math.min(Math.round(reconnectDelay * 1.5), 60000);
+    startWSS();
+  }, d);
 }
-/* =============================================== */
+/* ==================================================== */
 
 function startWSS() {
+  try {
+    // ferme proprement l’ancienne instance si encore là
+    if (wsRef && wsRef.readyState === WebSocket.OPEN) {
+      try { wsRef.close(); } catch {}
+    }
+  } catch {}
+
   const ws = new WebSocket(WS_URL, { headers: { 'x-api-key': API_KEY } });
+  wsRef = ws;
+
   ws.on('open', () => {
     log('WSS connected, subscribing...');
     reconnectDelay = 5000; // reset du backoff sur succès
+    clearTimers();
     ws.send(JSON.stringify(subscriptionMessage));
+
+    // keepalive ping/pong
+    pingTimer = setInterval(() => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      try {
+        ws.ping();
+        if (pongTimeout) clearTimeout(pongTimeout);
+        pongTimeout = setTimeout(() => {
+          log('⚠️ No pong from server — forcing reconnect');
+          try { ws.terminate(); } catch {}
+        }, PONG_GRACE);
+      } catch (e) {
+        log('ping error:', e?.message || String(e));
+      }
+    }, PING_INTERVAL);
+  });
+
+  ws.on('pong', () => {
+    if (pongTimeout) { clearTimeout(pongTimeout); pongTimeout = null; }
   });
 
   ws.on('message', async (raw) => {
@@ -136,7 +181,6 @@ function startWSS() {
       if (msg.event === 'subscribed') { log('subscribed'); return; }
       if (msg.event === 'ohlc_datafeed' && Array.isArray(msg.payload) && msg.payload.length) {
         for (const update of msg.payload) {
-          // we don't await each handleUpdate in sequence here to allow concurrency control inside handleUpdate
           handleUpdate(update).catch(err => log('handleUpdate uncaught:', err?.message || String(err)));
         }
       }
@@ -145,11 +189,12 @@ function startWSS() {
     }
   });
 
-  // ⬇️ modifs minimales : reconnexion
   ws.on('close', () => {
     log('⚠️ WSS closed');
+    clearTimers();
     scheduleReconnect();
   });
+
   ws.on('error', (err) => {
     log('❌ WSS error:', err?.message || String(err));
     try { ws.close(); } catch {}
