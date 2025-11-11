@@ -1,108 +1,95 @@
-// ======== EXECUTOR LOG LISTENER → hits VERIFY on executed/skipped/closed ========
-import fs from 'node:fs';
-import readline from 'node:readline';
+// runner.js
 import { spawn } from 'node:child_process';
+import { filterSuppressed, incSuppression, clearSuppression, getSuppressionMap } from './suppress.js';
+import { callVerify } from './fetcher.js';
+import { EXECUTOR_PATH, EXECUTOR_ADDR, EXECUTOR_RPC, CALL_DELAY_MS } from './config.js';
 
-const EXECUTOR_LOG_PATH = process.env.EXECUTOR_LOG_PATH || ''; // optional
-const EXECUTOR_TAIL = process.env.EXECUTOR_TAIL || '';         // optional command to run, e.g. "pm2 logs brokex-executor --raw"
+const log = (...a) => console.log(new Date().toISOString(), ...a);
 
-// Reuse existing verifier
-function verifyNow(ids) {
-  const uniq = Array.from(new Set(ids.map(Number))).filter(Number.isFinite);
-  if (!uniq.length) return;
-  const url = `${VERIFY_BASE}/verify/${uniq.join(',')}`;
-  fetch(url).catch(() => {});
-  log(`[executor->verify] ping ${uniq.length} id(s): ${uniq.join(',')}`);
-}
+/**
+ * Call executor.js (node) with args and proof, parse stdout for simulate.* lines.
+ * Returns { execFailed: bool, skippedSim: number, out: string }
+ */
+async function callExecutorProcess(mode, group, pk, assetId, proofHex) {
+  const argIds = JSON.stringify(group);
+  const args = [
+    EXECUTOR_PATH,
+    mode,
+    argIds,
+    pk,
+    `--asset=${assetId}`,
+    `--addr=${EXECUTOR_ADDR}`,
+    `--rpc=${EXECUTOR_RPC}`,
+    `--proof=${proofHex}`
+  ];
 
-// Try to extract IDs from a log line
-function extractIdsFromText(text) {
-  // Priority: explicit ids=...
-  const idsField = [...text.matchAll(/\bids?\s*=\s*([0-9,\s]+)/gi)]
-    .map(m => m[1])
-    .join(',');
-  if (idsField) {
-    return idsField
-      .split(',')
-      .map(s => Number(s.trim()))
-      .filter(n => Number.isFinite(n) && n >= 0);
-  }
-  // Fallback: (rare) bracketed arrays like [8667, 8813]
-  const bracket = text.match(/\[([\d,\s]+)\]/);
-  if (bracket) {
-    return bracket[1]
-      .split(',')
-      .map(s => Number(s.trim()))
-      .filter(n => Number.isFinite(n) && n >= 0);
-  }
-  return [];
-}
+  let out = '';
+  let execFailed = false;
 
-// Recognize the two signals
-const RE_CLOSE  = /simulate\.closeBatch\(\d+\)\s*→\s*closed=\d+\s*\|\s*skipped=\d+/i;
-const RE_EXEC   = /simulate\.execLimits\b.*?→\s*executed=\d+\s*\|\s*skipped=\d+/i;
-
-// Stream a readable (stdin or file) line-by-line
-function bindLogReadable(readable, label = 'stdin') {
-  const rl = readline.createInterface({ input: readable });
-  rl.on('line', (line) => {
-    try {
-      if (!line) return;
-      if (RE_CLOSE.test(line) || RE_EXEC.test(line)) {
-        const ids = extractIdsFromText(line);
-        if (ids.length) verifyNow(ids);
-        else log(`[executor->verify] matched but found no ids in line (${label})`);
-      }
-    } catch (e) {
-      log('[executor->verify] parse error:', e?.message || String(e));
-    }
+  await new Promise((resolve, reject) => {
+    const p = spawn('node', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    p.stdout.on('data', (buf) => { const s = buf.toString(); out += s; process.stdout.write(s); });
+    p.stderr.on('data', (buf) => { const s = buf.toString(); process.stderr.write(s); });
+    p.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`${mode} exit ${code}`))));
+    p.on('error', reject);
+  }).catch((e) => {
+    execFailed = true;
+    log(`[executor] process error:`, e?.message || String(e));
   });
-  rl.on('close', () => log(`[executor->verify] reader closed (${label})`));
+
+  // parse simulate lines
+  let skippedSim = 0;
+  try {
+    const m1 = out.match(/simulate\.execLimits\s*→\s*executed=(\d+)\s*\|\s*skipped=(\d+)/);
+    const m2 = out.match(/simulate\.closeBatch\(\d+\)\s*→\s*closed=(\d+)\s*\|\s*skipped=(\d+)/);
+    if (m1) skippedSim = Number(m1[2] || 0);
+    if (m2) skippedSim = Number(m2[2] || 0);
+  } catch (e) { /* noop */ }
+
+  return { execFailed, skippedSim, out };
 }
 
-// Start listening:
-// 1) If EXECUTOR_TAIL is provided, we spawn that command and parse its stdout.
-// 2) Else if EXECUTOR_LOG_PATH is provided, we tail-append the file.
-// 3) Else, we listen to process.stdin (so you can pipe pm2 logs into this script).
-(function startExecutorLogListener() {
-  try {
-    if (EXECUTOR_TAIL) {
-      const [bin, ...args] = EXECUTOR_TAIL.split(/\s+/);
-      const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-      log(`[executor->verify] tailing via spawn: ${EXECUTOR_TAIL}`);
-      bindLogReadable(child.stdout, 'spawn');
-      child.stderr.on('data', d => log('[executor->verify][stderr]', String(d).trim()));
-      return;
-    }
-
-    if (EXECUTOR_LOG_PATH) {
-      log(`[executor->verify] tailing file: ${EXECUTOR_LOG_PATH}`);
-      // naive tail - follow appends
-      let position = 0;
-      const readChunk = () => {
-        fs.stat(EXECUTOR_LOG_PATH, (err, st) => {
-          if (err || !st) return;
-          if (st.size > position) {
-            const stream = fs.createReadStream(EXECUTOR_LOG_PATH, { start: position, end: st.size - 1, encoding: 'utf8' });
-            bindLogReadable(stream, 'file');
-            position = st.size;
-          }
-        });
-      };
-      readChunk();
-      fs.watch(EXECUTOR_LOG_PATH, { persistent: true }, readChunk);
-      return;
-    }
-
-    // default: stdin
-    if (!process.stdin.isTTY) {
-      log('[executor->verify] reading from stdin (pipe your executor logs here)');
-      bindLogReadable(process.stdin, 'stdin');
-    } else {
-      log('[executor->verify] no EXECUTOR_TAIL/EXECUTOR_LOG_PATH and stdin is TTY — executor log listener idle');
-    }
-  } catch (e) {
-    log('[executor->verify] init error:', e?.message || String(e));
+/**
+ * High-level runner: batching + suppression + verify
+ */
+export async function runExecutor(mode, { assetId, ids, pk, slot, proofHex }) {
+  if (!ids?.length) return;
+  if (!pk) { log(`[runner] no PK for asset ${assetId}, skip`); return; }
+  if (!proofHex || typeof proofHex !== 'string' || !proofHex.startsWith('0x')) {
+    log(`[runner] invalid proof for asset ${assetId}, skip batch`);
+    return;
   }
-})();
 
+  const filtered = filterSuppressed(assetId, slot, ids);
+  if (!filtered.length) {
+    log(`[runner] all IDs clean-skipped on slot=${slot}`);
+    return;
+  }
+
+  for (let i = 0; i < filtered.length; i += 200) {
+    const group = filtered.slice(i, i + 200);
+
+    const { execFailed, skippedSim } = await callExecutorProcess(mode, group, pk, assetId, proofHex);
+
+    if (execFailed) {
+      const ver = await callVerify(group);
+      if (ver && ver.updated === 0) {
+        incSuppression(assetId, slot, group);
+      } else if (ver && (ver.updated > 0 || (Array.isArray(ver.mismatches) && ver.mismatches.length))) {
+        clearSuppression(assetId, slot, group);
+      }
+    } else if (skippedSim > 0) {
+      const ver = await callVerify(group);
+      if (ver && ver.updated === 0) {
+        incSuppression(assetId, slot, group);
+        const m = getSuppressionMap().get(`${assetId}:${slot}`);
+        const reached = group.filter(id => (m?.get(id) || 0) >= 3);
+        if (reached.length) log(`[runner] frozen IDs on slot=${slot}: ${reached.join(',')}`);
+      } else if (ver && (ver.updated > 0 || (Array.isArray(ver.mismatches) && ver.mismatches.length))) {
+        clearSuppression(assetId, slot, group);
+      }
+    }
+
+    await new Promise(r => setTimeout(r, CALL_DELAY_MS));
+  }
+}
