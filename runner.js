@@ -6,9 +6,36 @@ import { EXECUTOR_PATH, EXECUTOR_ADDR, EXECUTOR_RPC, CALL_DELAY_MS } from './con
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 
+/* ----------------- helpers: parse ids from executor stdout ----------------- */
+function uniqNums(arr) {
+  return Array.from(new Set(arr))
+    .map(Number)
+    .filter((n) => Number.isFinite(n) && n >= 0);
+}
+
+function extractIds(text) {
+  if (!text) return [];
+  // 1) ids=1,2,3
+  const matches = [...text.matchAll(/\bids?\s*=\s*([0-9,\s]+)/gi)];
+  if (matches.length) {
+    const combo = matches.map((m) => m[1]).join(',');
+    return uniqNums(
+      combo.split(',').map((s) => Number(String(s).trim()))
+    );
+  }
+  // 2) fallback: [1, 2, 3]
+  const bracket = text.match(/\[([\d,\s]+)\]/);
+  if (bracket) {
+    return uniqNums(
+      bracket[1].split(',').map((s) => Number(String(s).trim()))
+    );
+  }
+  return [];
+}
+
 /**
  * Call executor.js (node) with args and proof, parse stdout for simulate.* lines.
- * Returns { execFailed: bool, skippedSim: number, out: string }
+ * Returns { execFailed: bool, skippedSim: number, out: string, parsedIds: number[] }
  */
 async function callExecutorProcess(mode, group, pk, assetId, proofHex) {
   const argIds = JSON.stringify(group);
@@ -37,7 +64,7 @@ async function callExecutorProcess(mode, group, pk, assetId, proofHex) {
     log(`[executor] process error:`, e?.message || String(e));
   });
 
-  // parse simulate lines
+  // parse simulate lines (counts + ids)
   let skippedSim = 0;
   try {
     const m1 = out.match(/simulate\.execLimits\s*→\s*executed=(\d+)\s*\|\s*skipped=(\d+)/);
@@ -46,7 +73,10 @@ async function callExecutorProcess(mode, group, pk, assetId, proofHex) {
     if (m2) skippedSim = Number(m2[2] || 0);
   } catch (e) { /* noop */ }
 
-  return { execFailed, skippedSim, out };
+  // IDs listés dans les lignes simulate.* (exécutés/fermés/skipés)
+  const parsedIds = extractIds(out);
+
+  return { execFailed, skippedSim, out, parsedIds };
 }
 
 /**
@@ -69,8 +99,20 @@ export async function runExecutor(mode, { assetId, ids, pk, slot, proofHex }) {
   for (let i = 0; i < filtered.length; i += 200) {
     const group = filtered.slice(i, i + 200);
 
-    const { execFailed, skippedSim } = await callExecutorProcess(mode, group, pk, assetId, proofHex);
+    const { execFailed, skippedSim, parsedIds } = await callExecutorProcess(mode, group, pk, assetId, proofHex);
 
+    // ✅ NOUVEAUTÉ: si l'exécuteur imprime des IDs sur simulate.execLimits/closeBatch,
+    // on les envoie immédiatement à /verify/<ids> (exécutés, fermés, skipés).
+    if (parsedIds?.length) {
+      try {
+        const res = await callVerify(parsedIds);
+        log(`[runner] immediate verify on simulate.* ids=${parsedIds.length} (updated=${res?.updated ?? 'NA'})`);
+      } catch {
+        // fire-and-forget; ne bloque pas le flux
+      }
+    }
+
+    // --- logique existante préservée ---
     if (execFailed) {
       const ver = await callVerify(group);
       if (ver && ver.updated === 0) {
