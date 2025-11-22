@@ -12,7 +12,8 @@
     "exec:limit": "node executor.js limit \"[1]\" $PRIVATE_KEY --asset=0 --proof=0x",
     "exec:sl": "node executor.js sl \"[1]\" $PRIVATE_KEY --asset=0 --proof=0x",
     "exec:tp": "node executor.js tp \"[1]\" $PRIVATE_KEY --asset=0 --proof=0x",
-    "exec:liq": "node executor.js liq \"[1]\" $PRIVATE_KEY --asset=0 --proof=0x"
+    "exec:liq": "node executor.js liq \"[1]\" $PRIVATE_KEY --asset=0 --proof=0x",
+    "sender": "node sender.js"
   },
   "dependencies": {
     "axios": "^1.7.2",
@@ -24,7 +25,13 @@
     "node": ">=18"
   },
   "license": "MIT",
-  "keywords": ["supra", "oracle", "evm", "websocket", "proof", "trading"],
+  "keywords": [
+    "supra",
+    "oracle",
+    "evm",
+    "websocket",
+    "proof",
+    "trading"
+  ],
   "author": "Brokex"
 }
-
