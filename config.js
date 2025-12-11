@@ -7,7 +7,7 @@ export const API_BASE = 'https://api.brokex.trade';
 export const VERIFY_BASE = API_BASE;
 
 export const EXECUTOR_PATH = 'executor.js'; // garde tel quel
-export const EXECUTOR_ADDR = '0xb449FD01FA7937d146e867b995C261E33C619292';
+export const EXECUTOR_ADDR = '0xED853d3fD0da9b6c218124407419a47e5F9d8cC3';
 export const EXECUTOR_RPC = 'https://atlantic.dplabs-internal.com';
 
 export const RANGE_RATE = 0.0002; // ±0.02%
